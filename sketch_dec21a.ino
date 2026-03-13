@@ -31,7 +31,7 @@ Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 #define MAX_MEASURE 5
 #define MEASURE_INT 100
 #define MAX_NOTIFICHE 10
-#define LEN_MSG 45
+#define LEN_MSG 15
 
 // Filtro Persistenza VOC
 const float SOGLIA_VOC_ALLARME = 0.5;      // mg/m3
@@ -39,6 +39,7 @@ const unsigned long TEMPO_PERSISTENZA_VOC = 5000; // 5 secondi di "conferma"
 unsigned long tempoInizioPiccoVOC = 0;
 bool piccoVOCInCorso = false;
 bool allarmeVOCConfermato = false;
+unsigned long lastUpdate = 0;
 
 // ==================== ISTANZE E VARIABILI ====================
 Adafruit_BMP085 bmp;
@@ -67,10 +68,10 @@ static int livelloAltoCount = 0;
 struct SogliaCO { float mediaDigitale; float mediaAnalogico; float alpha; bool inizializzato; };
 struct SogliaECO2 { float media; float alpha; bool inizializzato; };
 
-SogliaCO sogliaCO15min = {0.0, 0.0, 0.0012, false};
-SogliaCO sogliaCO1ora   = {0.0, 0.0, 0.0003, false};
-SogliaCO sogliaCO8ore   = {0.0, 0.0, 0.000038, false};
-SogliaCO sogliaCO24ore  = {0.0, 0.0, 0.0000127, false};
+SogliaCO sogliaCO15min = {0.0, 0.0, 0.00111, false};
+SogliaCO sogliaCO1ora   = {0.0, 0.0, 0.000278, false};
+SogliaCO sogliaCO8ore   = {0.0, 0.0, 0.0000347, false};
+SogliaCO sogliaCO24ore  = {0.0, 0.0, 0.0000116, false};
 SogliaECO2 sogliaECO220min = {0.0, 0.00166, false};
 
 // ==================== FUNZIONI UTIL ====================
@@ -142,6 +143,13 @@ void aggiornaDisplayAsincrono() {
   }
 }
 
+float calcolaAlpha(float tau) {
+  unsigned long now = millis();
+  float dt = (now - lastUpdate) / 1000.0;
+  lastUpdate = now;
+  return 1.0 - exp(-dt / tau);
+}
+
 // ==================== SETUP ====================
 
 void setup() {
@@ -164,7 +172,7 @@ void setup() {
   tft.initR(INITR_BLACKTAB);
   tft.setRotation(1);
   tft.fillScreen(ST77XX_BLACK);
-  stampaNotifica("Sistema Avviato...");
+  stampaNotifica("Sistema Pronto...");
 }
 
 // ==================== LOOP ====================
@@ -213,6 +221,11 @@ void loop() {
   }
 
   // EMA e Soglie
+  sogliaCO15min.alpha = calcolaAlpha(900);
+  sogliaCO1ora.alpha = calcolaAlpha(3600);
+  sogliaCO8ore.alpha = calcolaAlpha(28800);
+  sogliaCO24ore.alpha = calcolaAlpha(86400);
+
   aggiornaSogliaCO(sogliaCO15min, ppmCODigital, 0);
   aggiornaSogliaCO(sogliaCO1ora, ppmCODigital, 0);
   aggiornaSogliaCO(sogliaCO8ore, ppmCODigital, 0);
