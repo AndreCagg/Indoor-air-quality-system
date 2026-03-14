@@ -30,8 +30,18 @@ Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 // ==================== COSTANTI E SOGLIE ====================
 #define MAX_MEASURE 5
 #define MEASURE_INT 100
-#define MAX_NOTIFICHE 10
-#define LEN_MSG 15
+#define MAX_NOTIFICHE 13
+#define LEN_MSG 20
+#define MAX_SAMPLES 30
+#define GRAPH_Y 30        
+#define GRAPH_X 30        
+#define GRAPH_W 98 
+#define GRAPH_H 90       
+
+uint16_t graphIndex = 0;
+
+float graphMin = 999999;
+float graphMax = -999999;
 
 // Filtro Persistenza VOC
 const float SOGLIA_VOC_ALLARME = 0.5;      // mg/m3
@@ -58,15 +68,24 @@ int idxNotifica = 0;
 int currentNotifica = 0;
 unsigned long lastDisplayTime = 0;
 const unsigned long displayInterval = 2000;
+unsigned long lastAlarmTime = 0;
+const unsigned long ALARM_INTERVAL = 120000; // 2 minuti
+int livelloPrec = 0;
 
 RtcDateTime dt;
-uint64_t startAt, aqiStart;
+//uint64_t startAt, aqiStart;
+long startAt;
 int stato=0, statoCO=0, coCurrLvl=0, coPrecLvl=0, aqiErr=0;
 static int livelloAltoCount = 0;
+long sampleIdx=0;
+bool toClear=true;
 
 // ==================== STRUTTURE EMA ====================
 struct SogliaCO { float mediaDigitale; float mediaAnalogico; float alpha; bool inizializzato; };
 struct SogliaECO2 { float media; float alpha; bool inizializzato; };
+
+struct Sample {float aqi; float co; float tvoc;};
+Sample samples[MAX_SAMPLES];
 
 SogliaCO sogliaCO15min = {0.0, 0.0, 0.00111, false};
 SogliaCO sogliaCO1ora   = {0.0, 0.0, 0.000278, false};
@@ -76,6 +95,119 @@ SogliaECO2 sogliaECO220min = {0.0, 0.00166, false};
 
 // ==================== FUNZIONI UTIL ====================
 
+float convertTVOCtoMG(float ppb) { return ((ppb * 59.3) / 24.45) / 1000.0; }
+
+bool floatDiverso(float a, float b) {
+  return abs(a - b) >= 0.005;
+}
+
+void disegnaGrafico(int type) {
+  //0: aqi
+  //1: tvoc
+  //2: co
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setCursor(0, 0);
+  tft.setTextSize(1);
+  switch(type){
+    case 0:
+      tft.print("Ultime 30 rilevazioni AQI");
+      break;
+    case 1:
+      tft.print("Ultime 30 rilevazioni mg/m3");
+      tft.setCursor(0,11);
+      tft.print("TVOC");
+      break;
+    case 2:
+      tft.print("Ultime 30 rilevazioni ppm");
+      tft.setCursor(0,11);
+      tft.print("CO");
+      break;
+  }
+
+  // 1. Calcola min/max solo sui campioni validi
+  float newMin = 999999, newMax = -999999;
+  int validCount = 0;
+  int nSamples = min((long)MAX_SAMPLES, sampleIdx);
+
+  for (int i = 0; i < nSamples; i++) {
+    int idx = (sampleIdx - nSamples + i + MAX_SAMPLES) % MAX_SAMPLES;
+    float v = 0;
+    switch(type){
+      case 0:
+        v=samples[idx].aqi;
+        break;
+      case 1:
+        v=samples[idx].tvoc;
+        break;
+      case 2:
+        v=samples[idx].co;
+        break;
+    }
+    if (v < newMin) newMin = v;
+    if (v > newMax) newMax = v;
+    validCount++;
+  }
+
+  if (validCount == 0) return;
+
+  if (newMax - newMin < 0.001) {
+    newMin = max(0.0f, newMin - 0.01f);
+    newMax = newMax + 0.01f;
+  }
+
+  graphMin = newMin;
+  graphMax = newMax;
+  float range = graphMax - graphMin;
+
+  tft.setCursor(0,13);
+  char buf[8];
+
+  // MAX in cima
+  dtostrf(graphMax, 5, 3, buf);
+  tft.setCursor(0, GRAPH_Y);
+  tft.print(buf);
+
+  // MID al centro
+  dtostrf((graphMax + graphMin) / 2.0f, 5, 3, buf);
+  tft.setCursor(0, GRAPH_Y + GRAPH_H / 2 - 3);
+  tft.print(buf);
+
+  // MIN in fondo
+  dtostrf(graphMin, 5, 3, buf);
+  tft.setCursor(0, GRAPH_Y + GRAPH_H - 8);
+  tft.print(buf);
+
+  // Asse Y
+  tft.drawFastVLine(GRAPH_X - 2, GRAPH_Y, GRAPH_H, ST77XX_WHITE);
+
+  tft.fillRect(GRAPH_X, GRAPH_Y, GRAPH_W, GRAPH_H, ST77XX_BLACK);
+
+  // 3. Plot
+  int px = -1, py = -1;
+  for (int i = 0; i < nSamples; i++) {
+    int idx = (sampleIdx - nSamples + i + MAX_SAMPLES) % MAX_SAMPLES;
+    float v = samples[idx].tvoc;
+
+    int x = GRAPH_X + (i * GRAPH_W / max(nSamples - 1, 1));
+    int y = (GRAPH_Y + GRAPH_H) - (int)((v - graphMin) * GRAPH_H / range);
+    y = constrain(y, GRAPH_Y, GRAPH_Y + GRAPH_H - 1);
+
+    if (px >= 0) {
+      tft.drawLine(px, py, x, y, ST77XX_GREEN);
+    } else {
+      tft.drawPixel(x, y, ST77XX_GREEN);
+    }
+    px = x;
+    py = y;
+  }
+}
+
+void addSample(Sample s){
+  samples[sampleIdx%MAX_SAMPLES]=s;
+  sampleIdx+=1;
+}
+
 void addNotifica(const char* msg) {
   if (idxNotifica < MAX_NOTIFICHE) {
     strncpy(notifiche[idxNotifica], msg, LEN_MSG - 1);
@@ -83,8 +215,6 @@ void addNotifica(const char* msg) {
     idxNotifica++;
   }
 }
-
-float convertTVOCtoMG(uint16_t ppb) { return ((ppb * 59.3) / 24.45) / 1000.0; }
 
 bool isChecksumValid(byte pf[]) {
   byte sum = 0;
@@ -118,28 +248,56 @@ void aggiornaLED() {
   else digitalWrite(pinR, HIGH);
 }
 
-const __FlashStringHelper* checkCO(float valore, float limite, long intervallo) {
+/*const __FlashStringHelper* checkCO(float valore, float limite, long intervallo) {
   if ((dt.Unix64Time() - startAt) < intervallo) return F("Wait");
   if (valore >= limite) { statoCO = 2; return F("DANGER"); }
   if (valore >= (limite * 0.9)) { statoCO = 1; return F("WARN"); }
   return F("OK");
-}
+}*/
 
-void stampaNotifica(char* msg) {
-  tft.fillScreen(ST77XX_BLACK);
-  tft.setCursor(0, 0);
-  tft.setTextColor(ST77XX_WHITE);
-  tft.setTextSize(2);
+void stampaNotifica(char* msg, bool clear) {
+  if(clear){
+    tft.fillScreen(ST77XX_BLACK);
+    tft.setCursor(0, 0);
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setTextSize(2);
+  }
+
   tft.print(msg);
 }
 
 void aggiornaDisplayAsincrono() {
   if (idxNotifica == 0) return;
   unsigned long now = millis();
+
   if (now - lastDisplayTime >= displayInterval) {
-    stampaNotifica(notifiche[currentNotifica]);
-    currentNotifica = (currentNotifica + 1) % idxNotifica;
-    lastDisplayTime = now;
+    int totalSlides = idxNotifica + 3; // notifiche + 3 Grafici
+
+    if (currentNotifica < idxNotifica) {
+      while (currentNotifica < idxNotifica) {
+        if (strcmp(notifiche[currentNotifica], "00") == 0) {
+          currentNotifica++;
+          lastDisplayTime = now;
+          toClear=true;
+          return; 
+        }
+
+        stampaNotifica(notifiche[currentNotifica], toClear);
+        toClear=false;
+        currentNotifica++;
+      }
+    }else {
+      int graphType = currentNotifica - idxNotifica;
+      disegnaGrafico(graphType);
+      
+      currentNotifica++;
+      // reset se sono terminati i grafici
+      if (currentNotifica >= totalSlides) {
+        currentNotifica = 0;
+        toClear=true;
+      }
+      lastDisplayTime = now;
+    }
   }
 }
 
@@ -148,6 +306,37 @@ float calcolaAlpha(float tau) {
   float dt = (now - lastUpdate) / 1000.0;
   lastUpdate = now;
   return 1.0 - exp(-dt / tau);
+}
+
+int livelloCOtotale() {
+
+  int lvl = 0;
+  long now=millis();
+
+  if (ppmCODigital >= 100) lvl = max(lvl, 2);
+  else if (ppmCODigital >= 90) lvl = max(lvl, 1);
+
+  if(now>=900){
+    if (sogliaCO15min.mediaDigitale >= 87) lvl = max(lvl, 2);
+    else if (sogliaCO15min.mediaDigitale >= (sogliaCO15min.mediaDigitale-(sogliaCO15min.mediaDigitale*0.1))) lvl = max(lvl, 1);
+
+    if(now>=3600){
+      if (sogliaCO1ora.mediaDigitale >= 36) lvl = max(lvl, 2);
+      else if (sogliaCO1ora.mediaDigitale >= (sogliaCO1ora.mediaDigitale-(sogliaCO1ora.mediaDigitale*0.1))) lvl = max(lvl, 1);
+
+      if(now>=28800){
+        if (sogliaCO8ore.mediaDigitale >= 9) lvl = max(lvl, 2);
+        else if (sogliaCO8ore.mediaDigitale >= (sogliaCO8ore.mediaDigitale-(sogliaCO8ore.mediaDigitale*0.1))) lvl = max(lvl, 1);
+
+        if(now>=86400){
+          if (sogliaCO24ore.mediaDigitale >= 6) lvl = max(lvl, 2);
+          else if (sogliaCO24ore.mediaDigitale >= (sogliaCO24ore.mediaDigitale-(sogliaCO24ore.mediaDigitale*0.1))) lvl = max(lvl, 1);
+        }
+      }
+    }
+  }
+
+  return lvl;
 }
 
 // ==================== SETUP ====================
@@ -164,20 +353,31 @@ void setup() {
   ens.begin(Wire, ensAddress);
   ens.setOperatingMode(SFE_ENS160_STANDARD);
   bmp.begin();
+  /*dt=RtcDateTime(__DATE__, __TIME__);
+  clock.SetDateTime(dt);*/
+  /*if(!dt.IsValid()){
+    //stampaNotifica("Errore clock...", true);
+    return;
+  }*/
 
-  dt = clock.GetDateTime();
-  startAt = dt.Unix64Time();
-  aqiStart = dt.Unix64Time();
+  for(int i=0; i<MAX_SAMPLES; i++){
+    samples[i]={0, 0, 0};
+  }
+
+  //startAt = dt.Unix64Time();
+  startAt=millis();
+  //aqiStart = dt.Unix64Time();
 
   tft.initR(INITR_BLACKTAB);
   tft.setRotation(1);
   tft.fillScreen(ST77XX_BLACK);
-  stampaNotifica("Sistema Pronto...");
+  stampaNotifica("Sistema pronto...", true);
 }
 
 // ==================== LOOP ====================
 
 void loop() {
+  //memset(notifiche, 0, sizeof(notifiche));
   dt = clock.GetDateTime();
   idxNotifica = 0;
   aqi_med = 0; tvoc_med = 0; mgm3_med = 0; eco2_med = 0; eth_med = 0; temp_med = 0; hum_med = 0;
@@ -205,7 +405,7 @@ void loop() {
 
   aqi_med /= MAX_MEASURE;
   tvoc_med /= MAX_MEASURE;
-  mgm3_med = convertTVOCtoMG(tvoc_med / MAX_MEASURE);
+  mgm3_med = convertTVOCtoMG(tvoc_med);
   eco2_med /= MAX_MEASURE;
   eth_med /= MAX_MEASURE;
   temp_med /= MAX_MEASURE;
@@ -219,6 +419,9 @@ void loop() {
       if (isChecksumValid(packet)) ppmCODigital = (((packet[4] & 0x1F) * 256) + packet[5]) * 0.1;
     }
   }
+
+  Sample s={aqi_med, ppmCODigital, mgm3_med};
+  addSample(s);
 
   // EMA e Soglie
   sogliaCO15min.alpha = calcolaAlpha(900);
@@ -248,14 +451,65 @@ void loop() {
   // ==================== GESTIONE NOTIFICHE ====================
   char buffer[LEN_MSG], f_val[10];
 
-  dtostrf(temp_med, 0, 1, f_val); sprintf(buffer, "T: %s C", f_val); addNotifica(buffer);
-  dtostrf(mgm3_med, 0, 2, f_val); sprintf(buffer, "VOC: %s mg/m3", f_val); addNotifica(buffer);
-  dtostrf(ppmCODigital, 0, 1, f_val); sprintf(buffer, "CO: %s ppm", f_val); addNotifica(buffer);
+  dtostrf(temp_med, 0, 1, f_val);
+  sprintf(buffer, "T: %s C\n", f_val);
+  addNotifica(buffer);
+
+  dtostrf(hum_med, 0, 1, f_val); 
+  sprintf(buffer, "H: %s %", f_val);
+  addNotifica(buffer);
+  addNotifica("00");
+
+  dtostrf(aqi_med, 0, 1, f_val);
+  sprintf(buffer, "AQI: %s\n", f_val);
+  addNotifica(buffer);
+
+  dtostrf(mgm3_med, 0, 1, f_val);
+  sprintf(buffer, "TVOC: %s mg/m3\n", f_val);
+  addNotifica(buffer);
+
+  dtostrf(eco2_med, 0, 1, f_val);
+  sprintf(buffer, "eCO2: %s", f_val);
+  addNotifica(buffer);
+  addNotifica("00");
+
+
+  dtostrf(ppmCODigital, 0, 1, f_val); 
+  sprintf(buffer, "CO: %s ppm\n", f_val);
+  addNotifica(buffer);
+
+  //stampa condizionale
+  unsigned long now = millis();
+  if(now>=900000){
+    dtostrf(sogliaCO15min.mediaDigitale, 0, 1, f_val); 
+    sprintf(buffer, "CO 15min: %s ppm\n", f_val);
+    addNotifica(buffer);
+
+    if(now>=3600000){
+      dtostrf(sogliaCO1ora.mediaDigitale, 0, 1, f_val); 
+      sprintf(buffer, "CO 1ora: %s ppm\n", f_val);
+      addNotifica(buffer);
+
+      if(now>=28800000){
+        dtostrf(sogliaCO8ore.mediaDigitale, 0, 1, f_val); 
+        sprintf(buffer, "CO 8ore: %s ppm\n", f_val);
+        addNotifica(buffer);
+
+        if(now>=86400000){
+          dtostrf(sogliaCO24ore.mediaDigitale, 0, 1, f_val); 
+          sprintf(buffer, "CO 24ore: %s ppm\n", f_val);
+          addNotifica(buffer);
+        }
+      }
+    }
+  }
+
+  addNotifica("00");
   
   if(allarmeVOCConfermato) addNotifica("!! ALLARME VOC !!");
 
   // ==================== LOGICA ALLARME ====================
-  bool pericoloCO = (ppmCODigital >= 100);
+  bool pericoloCO = (ppmCODigital >= 100); //controllo su altre fasce
   
   // Gestione LED
   if (aqi_med > 3 || ppmCODigital > 100) stato = 2; // Rosso
@@ -265,9 +519,23 @@ void loop() {
   aggiornaLED();
 
   // Suona se CO critico O VOC confermati oltre 5 secondi
-  if (pericoloCO || allarmeVOCConfermato) {
+  /*if ((pericoloCO || allarmeVOCConfermato)) {
     makeAlarm();
+  }*/
+  int livello = max(stato, livelloCOtotale());
+
+  bool peggiorato = livello > livelloPrec;
+  bool pericolo = livello >= 1 || allarmeVOCConfermato;
+
+  if (peggiorato) {
+    makeAlarm();
+    lastAlarmTime = now;
+  }else if (pericolo && now - lastAlarmTime > ALARM_INTERVAL) {
+    makeAlarm();
+    lastAlarmTime = now;
   }
+
+  livelloPrec = livello;
 
   aggiornaDisplayAsincrono();
   delay(500);

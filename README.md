@@ -28,3 +28,8 @@ Prossimamente verranno aggiunti i seguenti componenti:
 - Interruttore per mutare il buzzer
 
 - Scheda SD per la memorizzazioni dei dati per la renderizzazione del grafico
+
+# Performance
+Lo sketch viene prototipato su un Arduino UNO occupando il 96% della memoria Flash (max 32KB) e 87% di RAM (max 2KB) 
+
+# Circuito
