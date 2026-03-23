@@ -9,9 +9,7 @@ Il sistema è stato implementato su un arduino UNO.
 Sono stati utilizzati
 - ENS160 per la rilevazione della qualità dell'aria
 
-- DHT11 per la rilavazione dell'umidità (sarebbe da sceglierne uno migliore)
-
-- BMP180 per la rilevazione della temperatura
+- SHT31 per la rilevazione della temperatura ed umidità
 
 - Traffic light LED per la segnalazione della qualità dell'aria
 
@@ -21,15 +19,19 @@ Sono stati utilizzati
 
 - Display TFT per la visualizzazione delle rilevazioni in modo testuale e grafico
 
-Prossimamente verranno aggiunti i seguenti componenti:
+materiale aggiuntivo (successivamente verranno dettagliati):
 
-- Pulsante per l'accesione del display a comando
+- diodo
 
-- Interruttore per mutare il buzzer
+- 2 resistenze
 
-- Scheda SD per la memorizzazioni dei dati per la renderizzazione del grafico
+- 2 pulsanti
+
+- led
+
+- 2 transistor
 
 # Performance
-Lo sketch viene prototipato su un Arduino UNO occupando il 96% della memoria Flash (max 32KB) e 87% di RAM (max 2KB) 
+Lo sketch viene prototipato su un Arduino UNO occupando il 90% della memoria Flash (max 32KB) e 85% di RAM (max 2KB) 
 
 # Circuito

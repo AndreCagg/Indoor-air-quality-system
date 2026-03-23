@@ -4,11 +4,13 @@
 #include <SoftwareSerial.h>
 //#include <ThreeWire.h>
 #include <RtcDS1302.h>
-#include <Adafruit_BMP085.h>
+//#include <Adafruit_BMP085.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
 #include <SPI.h>
 #include "PCF8575.h"
+#include "Adafruit_SHT31.h"
+
 
 // ==================== CONFIGURAZIONE DISPLAY ====================
 #define TFT_CS A1
@@ -57,10 +59,11 @@ bool allarmeVOCConfermato = false;
 unsigned long lastUpdate = 0;
 
 // ==================== ISTANZE E VARIABILI ====================
-Adafruit_BMP085 bmp;
+Adafruit_SHT31 sht31 = Adafruit_SHT31();
+//Adafruit_BMP085 bmp;
 SoftwareSerial sensorSerial(pinRXCO, pinTXCO);
 SparkFun_ENS160 ens;
-DHT11 dht(pinDHT);
+//DHT11 dht(pinDHT);
 PCF8575 pcf(0x20);
 
 float ppmCODigital = 0, ppmCOAnalog = 0;
@@ -83,7 +86,7 @@ long sampleIdx=0;
 bool toClear=true;
 bool mute=false;
 bool pulsanteMutePremuto=false;
-bool tftAbilitato=true;
+bool tftAbilitato=false;
 bool pulsanteTftPremuto=false;
 
 // ==================== STRUTTURE EMA ====================
@@ -264,17 +267,17 @@ void controllaPulsante() {
     if (!pulsanteTftPremuto) {
       tftAbilitato = !tftAbilitato;
       
-      if (!tftAbilitato) {
-        // spegnimento display
-        analogWrite(PINSLEEPTFT, 0);
-      } else {
-        //accensione display
+      if (tftAbilitato) {
+        // accensione display
         analogWrite(PINSLEEPTFT, 1023);
+      } else {
+        //spegnimento display
+        analogWrite(PINSLEEPTFT, 0);
         toClear = true; 
       }
       
       pulsanteTftPremuto = true;
-      delay(200); 
+      //delay(200); 
     }
   } else {
     pulsanteTftPremuto = false;
@@ -364,24 +367,25 @@ int livelloCOtotale() {
   int lvl = 0;
   long now = millis();
 
+  // Allarme istantaneo
   if (ppmCODigital >= 100) lvl = max(lvl, 2);
   else if (ppmCODigital >= 90) lvl = max(lvl, 1);
 
-  if (now >= 900) {
+  if (now >= 900) { // Dopo 15 minuti
     if (sogliaCO15min.mediaDigitale >= 87) lvl = max(lvl, 2);
-    else if (sogliaCO15min.mediaDigitale >= (sogliaCO15min.mediaDigitale - (sogliaCO15min.mediaDigitale * 0.1))) lvl = max(lvl, 1);
+    else if (sogliaCO15min.mediaDigitale >= (87 * 0.9)) lvl = max(lvl, 1); // >= 78.3
 
-    if (now >= 3600) {
+    if (now >= 3600) { // Dopo 1 ora
       if (sogliaCO1ora.mediaDigitale >= 36) lvl = max(lvl, 2);
-      else if (sogliaCO1ora.mediaDigitale >= (sogliaCO1ora.mediaDigitale - (sogliaCO1ora.mediaDigitale * 0.1))) lvl = max(lvl, 1);
+      else if (sogliaCO1ora.mediaDigitale >= (36 * 0.9)) lvl = max(lvl, 1); // >= 32.4
 
-      if (now >= 28800) {
+      if (now >= 28800) { // Dopo 8 ore
         if (sogliaCO8ore.mediaDigitale >= 9) lvl = max(lvl, 2);
-        else if (sogliaCO8ore.mediaDigitale >= (sogliaCO8ore.mediaDigitale - (sogliaCO8ore.mediaDigitale * 0.1))) lvl = max(lvl, 1);
+        else if (sogliaCO8ore.mediaDigitale >= (9 * 0.9)) lvl = max(lvl, 1); // >= 8.1
 
-        if (now >= 86400) {
+        if (now >= 86400) { // Dopo 24 ore
           if (sogliaCO24ore.mediaDigitale >= 6) lvl = max(lvl, 2);
-          else if (sogliaCO24ore.mediaDigitale >= (sogliaCO24ore.mediaDigitale - (sogliaCO24ore.mediaDigitale * 0.1))) lvl = max(lvl, 1);
+          else if (sogliaCO24ore.mediaDigitale >= (6 * 0.9)) lvl = max(lvl, 1); // >= 5.4
         }
       }
     }
@@ -406,7 +410,11 @@ void setup() {
 
   ens.begin(Wire, ensAddress);
   ens.setOperatingMode(SFE_ENS160_STANDARD);
-  bmp.begin();
+  //bmp.begin();
+  if(!sht31.begin(0x44)) {
+    return;
+  }
+  sht31.heater(false);
 
   for (int i = 0; i < MAX_SAMPLES; i++) {
     samples[i] = {0, 0, 0};
@@ -418,10 +426,10 @@ void setup() {
 
   pcf.write(PINBTN, HIGH);
   pcf.write(PINSLEEPTFT, HIGH);
-  pcf.write(3, LOW);
+  //pcf.write(3, LOW);
 
   startAt = millis();
-  analogWrite(PINSLEEPTFT, 1023);
+  analogWrite(PINSLEEPTFT, 0);
   tft.initR(INITR_BLACKTAB);
   tft.setRotation(1);
   tft.fillScreen(ST77XX_BLACK);
@@ -435,9 +443,11 @@ void loop() {
   aqi_med = 0; tvoc_med = 0; mgm3_med = 0; eco2_med = 0; eth_med = 0; temp_med = 0; hum_med = 0;
 
   for (int i = 0; i < MAX_MEASURE; i++) {
-    dht.update();
-    temp = bmp.readTemperature();
-    hum = dht.readHumidity();
+    //dht.update();
+    //temp = bmp.readTemperature();
+    //hum = dht.readHumidity();
+    temp = sht31.readTemperature()-1;
+    hum = sht31.readHumidity();
     ens.setTempCompensationCelsius(temp);
     ens.setRHCompensationFloat(hum);
 
@@ -579,12 +589,6 @@ void loop() {
   }
 
   livelloPrec = livello;
-
-  if (mute) {
-    Serial.println(F("MUTO"));
-  } else {
-    Serial.println(F("NO MUTO"));
-  }
 
   aggiornaDisplayAsincrono();
 
